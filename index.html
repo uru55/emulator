@@ -41,6 +41,7 @@
     #login, #denied, #menu { display: none; }
     #wrap { width: 100%; height: 100vh; height: 100dvh; display: none; } /* dvh = スマホのアドレスバーを除いた高さ */
     #status { padding: 16px; }
+    #quit { position: fixed; top: 8px; left: 8px; z-index: 9999; padding: 6px 10px; font-size: 13px; background: rgba(0,0,0,.55); border-color: #555; }
   </style>
 </head>
 <body>
@@ -104,7 +105,7 @@
   </div>
 
   <!-- ゲーム画面 -->
-  <div id="wrap"><div id="status"></div><div id="game"></div></div>
+  <div id="wrap"><button id="quit">✕ やめる</button><div id="status"></div><div id="game"></div></div>
 
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
@@ -405,7 +406,18 @@
 
 
     // ---------- ゲーム開始：ダウンロード → 復号 → 起動 ----------
+    // ---------- ゲームをやめる（「✕ やめる」ボタン・ブラウザの「戻る」） ----------
+    let playing = false;
+    function quitGame() {
+      try { window.EJS_emulator?.gameManager?.saveSaveFiles?.(); } catch (e) {} // ゲーム内セーブを保存
+      setTimeout(() => location.reload(), 300); // 再読み込みで、遊んでいた機種のゲーム一覧に戻る
+    }
+    $('quit').onclick = () => { if (playing) history.back(); else quitGame(); };
+    window.addEventListener('popstate', () => { if (playing) { playing = false; quitGame(); } });
+
     async function start(g) {
+      playing = true;
+      history.pushState({ playing: true }, '', location.href);
       show('wrap');
       const status = $('status');
       try {
