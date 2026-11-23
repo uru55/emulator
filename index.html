@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>レトロゲーム</title>
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
+    .box { max-width: 640px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 20px; }
+    h2 { font-size: 16px; margin-top: 24px; border-top: 1px solid #333; padding-top: 16px; }
+    .game { display: flex; gap: 8px; margin: 8px 0; }
+    .game button.play { flex: 1; text-align: left; }
+    button { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 10px 12px; font-size: 15px; cursor: pointer; }
+    button:hover { background: #3a3a3a; }
+    button.main { background: #2d5bd7; border-color: #2d5bd7; }
+    button.danger { color: #ff8a8a; }
+    input, select { width: 100%; box-sizing: border-box; margin: 4px 0 10px; padding: 8px; background: #1c1c1c; color: #eee; border: 1px solid #444; border-radius: 6px; font-size: 15px; }
+    input[type=checkbox] { width: auto; margin-right: 6px; }
+    .note { color: #999; font-size: 13px; line-height: 1.6; }
+    .warn { background: #3a2d10; border: 1px solid #806020; padding: 10px; border-radius: 6px; font-size: 14px; display: none; }
+    details { margin-top: 24px; border-top: 1px solid #333; padding-top: 12px; }
+    summary { cursor: pointer; font-size: 16px; }
+    #lock, #menu { display: none; }
+    #wrap { width: 100%; height: 100vh; display: none; }
+    #status { padding: 16px; }
+  </style>
+</head>
+<body>
+  <!-- パスワード入力 -->
+  <div id="lock" class="box">
+    <h1>🔒 パスワード</h1>
+    <p class="note" id="lockMsg"></p>
+    <input id="pw" type="password" placeholder="パスワード">
+    <input id="pw2" type="password" placeholder="もう一度（確認）" style="display:none">
+    <label class="note"><input type="checkbox" id="remember">このPCに記憶する（自分のPCだけチェック）</label>
+    <p><button class="main" id="unlock">開く</button></p>
+  </div>
+
+  <!-- ゲーム一覧 -->
+  <div id="menu" class="box">
+    <h1>🎮 ゲーム一覧</h1>
+    <div class="warn" id="dirty">一覧が変更されています。下の「games.enc を書き出す」でファイルを保存し、GitHubにアップロードしてください。</div>
+    <div id="list"></div>
+    <p class="note" id="empty">まだゲームがありません。下の「管理」から追加してください。</p>
+
+    <details>
+      <summary>管理（ゲームの追加）</summary>
+
+      <h2>① ROMを暗号化する</h2>
+      <p class="note">ROMを選ぶと、暗号化したファイル（〜.enc）がダウンロードされます。それをDropboxにアップロードして、共有リンクをコピーしてください。</p>
+      <input type="file" id="romFile">
+      <p class="note" id="encMsg"></p>
+
+      <h2>② 一覧に追加する</h2>
+      <label>ゲーム名</label>
+      <input id="name" placeholder="例：スーパーマリオワールド">
+      <label>機種</label>
+      <select id="core">
+        <option value="nes">ファミコン（NES）</option>
+        <option value="snes">スーパーファミコン（SNES）</option>
+        <option value="gb">ゲームボーイ / カラー</option>
+        <option value="gba">ゲームボーイアドバンス</option>
+        <option value="n64">NINTENDO 64</option>
+        <option value="nds">ニンテンドーDS</option>
+        <option value="segaMD">メガドライブ</option>
+      </select>
+      <label>暗号化したファイルのDropbox共有リンク</label>
+      <input id="url" placeholder="https://www.dropbox.com/scl/fi/.../〜.enc?...">
+      <button id="add">追加する</button>
+
+      <h2>③ 一覧を保存する</h2>
+      <p class="note">games.enc がダウンロードされます。GitHubのリポジトリ（index.htmlと同じ場所）にアップロードして上書きしてください。</p>
+      <button class="main" id="export">games.enc を書き出す</button>
+    </details>
+
+    <h2>友達のPCで使ったあと</h2>
+    <p class="note">このPCに残っているパスワード・セーブデータ・読み込んだゲームを消します。</p>
+    <button class="danger" id="wipe">このPCから消す</button>
+  </div>
+
+  <!-- ゲーム画面 -->
+  <div id="wrap"><div id="status"></div><div id="game"></div></div>
+
+  <script>
+    const PW_KEY = 'retro-pw';
+    const MAGIC = new TextEncoder().encode('ERM1');
+    let password = '';
+    let games = [];
+    let dirty = false;
+
+    // ---------- 暗号化（AES-GCM、パスワードから鍵を作る） ----------
+    async function deriveKey(pw, salt) {
+      const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+      return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' },
+        base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    }
+    async function encryptBytes(pw, data) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await deriveKey(pw, salt);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data));
+      const out = new Uint8Array(4 + 16 + 12 + ct.length);
+      out.set(MAGIC, 0); out.set(salt, 4); out.set(iv, 20); out.set(ct, 32);
+      return out;
+    }
+    async function decryptBytes(pw, buf) {
+      const b = new Uint8Array(buf);
+      if (b.length < 32 || MAGIC.some((v, i) => b[i] !== v)) throw new Error('暗号化されたファイルではありません');
+      const key = await deriveKey(pw, b.slice(4, 20));
+      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.slice(20, 32) }, key, b.slice(32));
+      // パスワードが違うとここでエラーになる
+    }
+
+    // ---------- 保存まわり ----------
+    function savedPw() {
+      try { return localStorage.getItem(PW_KEY) || sessionStorage.getItem(PW_KEY) || ''; } catch (e) { return ''; }
+    }
+    function storePw(pw, remember) {
+      try {
+        if (remember) localStorage.setItem(PW_KEY, pw);
+        else sessionStorage.setItem(PW_KEY, pw); // タブを閉じると消える
+      } catch (e) {}
+    }
+    function download(data, filename) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([data]));
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+    function toDirect(link) {
+      try {
+        const u = new URL(link.trim());
+        if (!u.hostname.endsWith('dropbox.com')) return null;
+        u.hostname = 'dl.dropboxusercontent.com';
+        u.searchParams.delete('dl');
+        u.searchParams.delete('raw');
+        return u.toString();
+      } catch (e) { return null; }
+    }
+    function show(id) {
+      for (const x of ['lock', 'menu', 'wrap']) document.getElementById(x).style.display = x === id ? 'block' : 'none';
+    }
+
+    // ---------- 起動時：games.enc を読み込む ----------
+    let encList = null; // null = まだ一覧がない（はじめて）
+
+    async function boot() {
+      try {
+        const res = await fetch('games.enc', { cache: 'no-cache' });
+        if (res.ok) encList = await res.arrayBuffer();
+      } catch (e) {}
+      const pw = savedPw();
+      if (pw && encList && await tryOpen(pw)) return;
+      askPassword();
+    }
+
+    function askPassword(msg) {
+      const first = !encList;
+      document.getElementById('lockMsg').textContent = msg ||
+        (first ? 'はじめて使います。パスワードを決めてください（忘れると戻せません）。' : 'パスワードを入れてください。');
+      document.getElementById('pw2').style.display = first ? 'block' : 'none';
+      show('lock');
+    }
+
+    async function tryOpen(pw) {
+      try {
+        const plain = await decryptBytes(pw, encList);
+        games = JSON.parse(new TextDecoder().decode(plain));
+        password = pw;
+        render(); show('menu');
+        return true;
+      } catch (e) { return false; }
+    }
+
+    document.getElementById('unlock').onclick = async () => {
+      const pw = document.getElementById('pw').value;
+      const remember = document.getElementById('remember').checked;
+      if (!pw) return;
+      if (!encList) {
+        if (pw !== document.getElementById('pw2').value) { askPassword('確認用のパスワードが一致しません。'); return; }
+        password = pw; games = []; dirty = true;
+        storePw(pw, remember); render(); show('menu');
+        return;
+      }
+      if (await tryOpen(pw)) storePw(pw, remember);
+      else askPassword('パスワードが違います。');
+    };
+    document.getElementById('pw').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('unlock').click(); });
+
+    // ---------- 一覧の表示 ----------
+    function render() {
+      const list = document.getElementById('list');
+      list.innerHTML = '';
+      document.getElementById('empty').style.display = games.length ? 'none' : 'block';
+      document.getElementById('dirty').style.display = dirty ? 'block' : 'none';
+      games.forEach((g, i) => {
+        const row = document.createElement('div');
+        row.className = 'game';
+        const play = document.createElement('button');
+        play.className = 'play';
+        play.textContent = '▶ ' + g.name;
+        play.onclick = () => start(g);
+        const del = document.createElement('button');
+        del.textContent = '削除';
+        del.onclick = () => {
+          if (!confirm(g.name + ' を一覧から消しますか？')) return;
+          games.splice(i, 1); dirty = true; render();
+        };
+        row.append(play, del);
+        list.appendChild(row);
+      });
+    }
+
+    // ---------- 管理：ROMの暗号化・追加・書き出し ----------
+    let lastFileName = '';
+    document.getElementById('romFile').onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const msg = document.getElementById('encMsg');
+      msg.textContent = '暗号化中…';
+      const enc = await encryptBytes(password, await file.arrayBuffer());
+      lastFileName = file.name;
+      download(enc, file.name + '.enc');
+      msg.textContent = '「' + file.name + '.enc」を保存しました。Dropboxにアップロードしてリンクを②に貼ってください。元のROMはDropboxに上げないでください。';
+      if (!document.getElementById('name').value) document.getElementById('name').value = file.name.replace(/\.[^.]+$/, '');
+      e.target.value = '';
+    };
+
+    document.getElementById('add').onclick = () => {
+      const name = document.getElementById('name').value.trim();
+      const core = document.getElementById('core').value;
+      const url = toDirect(document.getElementById('url').value);
+      if (!name) { alert('ゲーム名を入れてください'); return; }
+      if (!url) { alert('Dropboxの共有リンクを入れてください'); return; }
+      // 元のファイル名（拡張子）を覚えておく。リンクの「〜.enc」から取り出す
+      const fromUrl = decodeURIComponent(new URL(url).pathname.split('/').pop()).replace(/\.enc$/, '');
+      const file = fromUrl.includes('.') ? fromUrl : (lastFileName || name);
+      games.push({ name, core, url, file });
+      dirty = true;
+      document.getElementById('name').value = '';
+      document.getElementById('url').value = '';
+      render();
+    };
+
+    document.getElementById('export').onclick = async () => {
+      const enc = await encryptBytes(password, new TextEncoder().encode(JSON.stringify(games)));
+      download(enc, 'games.enc');
+      encList = enc.buffer;
+      dirty = false; render();
+    };
+
+    window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+    // ---------- このPCから消す ----------
+    document.getElementById('wipe').onclick = async () => {
+      if (!confirm('このPCのパスワード・セーブデータ・ゲームの読み込みデータを消します。よろしいですか？')) return;
+      try { localStorage.clear(); sessionStorage.clear(); } catch (e) {}
+      try {
+        if (indexedDB.databases) {
+          for (const db of await indexedDB.databases()) if (db.name) indexedDB.deleteDatabase(db.name);
+        }
+      } catch (e) {}
+      try { if (window.caches) for (const k of await caches.keys()) await caches.delete(k); } catch (e) {}
+      dirty = false;
+      alert('消しました。このタブを閉じてください。');
+      location.reload();
+    };
+
+    // ---------- ゲーム開始：ダウンロード → 復号 → 起動 ----------
+    async function start(g) {
+      show('wrap');
+      const status = document.getElementById('status');
+      try {
+        status.textContent = '読み込み中…';
+        const res = await fetch(g.url);
+        if (!res.ok) throw new Error('ダウンロードできませんでした（' + res.status + '）');
+        const total = Number(res.headers.get('content-length')) || 0;
+        const reader = res.body.getReader();
+        const chunks = []; let got = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value); got += value.length;
+          status.textContent = '読み込み中… ' + (got / 1048576).toFixed(1) + 'MB' +
+            (total ? ' / ' + (total / 1048576).toFixed(1) + 'MB' : '');
+        }
+        status.textContent = '復号中…';
+        const plain = await decryptBytes(password, await new Blob(chunks).arrayBuffer());
+        status.textContent = '';
+        status.style.display = 'none';
+
+        window.EJS_player = '#game';
+        window.EJS_core = g.core;
+        window.EJS_gameUrl = new File([plain], g.file || g.name);
+        window.EJS_gameName = g.name;
+        window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+        window.EJS_startOnLoaded = true;
+        const s = document.createElement('script');
+        s.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
+        document.body.appendChild(s);
+      } catch (e) {
+        alert((e && e.name === 'OperationError') ? 'このファイルは別のパスワードで暗号化されています' : e.message);
+        location.reload();
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
