@@ -123,7 +123,9 @@
     $('signin').onclick = async () => {
       try {
         await setPersistence(auth, $('temp').checked ? browserSessionPersistence : browserLocalPersistence);
-        await signInWithPopup(auth, new GoogleAuthProvider());
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: 'select_account' }); // 毎回アカウントを選ぶ画面を出す
+        await signInWithPopup(auth, provider);
       } catch (e) { alert('ログインできませんでした：' + e.code); }
     };
     $('signout').onclick = $('signout2').onclick = () => signOut(auth);
