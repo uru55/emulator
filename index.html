@@ -51,9 +51,9 @@
     #status { padding: 16px; }
     #bar { height: 44px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 8px; background: #181818; border-bottom: 1px solid #333; }
     #quit { width: 36px; height: 32px; padding: 0; font-size: 16px; line-height: 1; }
-    #resume { position: fixed; left: 50%; top: 30%; transform: translateX(-50%); z-index: 9999; background: #1c1c1c; border: 1px solid #444; border-radius: 10px; padding: 16px 20px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.6); }
-    #resume p { margin: 0 0 8px; }
-    #playing { font-size: 14px; color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #menuBtn { width: 36px; height: 32px; padding: 0; font-size: 18px; line-height: 1; margin-left: auto; flex: none; }
+    .ejs_virtualGamepad_open { display: none !important; } /* EmulatorJSの☰は隠して、上のバーの☰を使う */
+    #playing { flex: 1; min-width: 0; font-size: 14px; color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #game { flex: 1; min-height: 0; }
   </style>
 </head>
@@ -119,7 +119,7 @@
 
   <!-- ゲーム画面 -->
   <div id="wrap">
-    <div id="bar"><button id="quit" title="やめる" aria-label="やめる">✕</button><span id="playing"></span></div>
+    <div id="bar"><button id="quit" title="やめる" aria-label="やめる">✕</button><span id="playing"></span><button id="menuBtn" title="メニュー" aria-label="メニュー">☰</button></div>
     <div id="status"></div>
     <div id="game"></div>
   </div>
@@ -432,141 +432,15 @@
       }
     }).observe($('game'), { childList: true, subtree: true });
 
-    // ---------- セーブの同期（Firestoreに暗号化して保存） ----------
-    // saves/{ゲームID}            … いつ・どの端末で保存したか
-    // saves/{ゲームID}/parts/…    … データ本体（圧縮→暗号化→分割）
-    const PART = 700000;                 // 1つのドキュメントに入れる文字数（上限1MBより小さく）
-    const DEVICE = /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone/iPad'
-                 : /Android/.test(navigator.userAgent) ? 'Android' : 'PC';
-    let cur = null;                      // 今遊んでいるゲームの同期情報
-
-    function b64enc(u8) {
-      let s = '';
-      for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-      return btoa(s);
-    }
-    const b64dec = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-    async function gzip(u8, compress) {
-      const stream = compress ? new CompressionStream('gzip') : new DecompressionStream('gzip');
-      return new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(stream)).arrayBuffer());
-    }
-    async function putBlob(gameId, kind, u8) {
-      const s = b64enc(await encryptBytes(await gzip(u8, true)));
-      const n = Math.max(1, Math.ceil(s.length / PART));
-      for (let i = 0; i < n; i++) {
-        await setDoc(doc(db, 'saves', gameId, 'parts', kind + i), { d: s.slice(i * PART, (i + 1) * PART) });
-      }
-      return n;
-    }
-    async function getBlob(gameId, kind, n) {
-      let s = '';
-      for (let i = 0; i < n; i++) s += (await getDoc(doc(db, 'saves', gameId, 'parts', kind + i))).data().d;
-      return gzip(new Uint8Array(await decryptBytes(b64dec(s).buffer)), false);
-    }
-    const sameBytes = (a, b) => a && b && a.length === b.length && a.every((v, i) => v === b[i]);
-    const fmt = t => new Date(t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    function note(msg) { $('playing').textContent = cur ? cur.g.name + (msg ? '　' + msg : '') : msg; }
-
-    // ゲームが始まったとき：クラウドのセーブを読み込む
-    async function onGameStarted(g) {
-      const gm = window.EJS_emulator && window.EJS_emulator.gameManager;
-      if (!gm || !window.CompressionStream) return;
-      cur = { g, lastSram: null, busy: false };
-      try {
-        const snap = await getDoc(doc(db, 'saves', g.id));
-        if (snap.exists()) {
-          const m = snap.data();
-          const localAt = Number(localStorage.getItem('sramAt_' + g.id) || 0);
-          if (m.sramParts && m.sramAt > localAt) {
-            note('セーブを読み込み中…');
-            const data = await getBlob(g.id, 'sram', m.sramParts);
-            const path = gm.getSaveFilePath();
-            try { gm.FS.unlink(path); } catch (e) {}
-            gm.FS.writeFile(path, data);
-            gm.loadSaveFiles();
-            if (gm.restart) gm.restart();   // ゲームにセーブを読み直させる
-            localStorage.setItem('sramAt_' + g.id, m.sramAt);
-            cur.lastSram = data;
-          }
-          if (m.stateParts && m.stateAt) askResume(g, m);
-        }
-        note('');
-      } catch (e) { console.warn(e); note('セーブの同期に失敗'); }
-      cur.timer = setInterval(syncSram, 60000);   // 1分ごとにゲーム内セーブを確認
-    }
-
-    // 「前回の続きから？」の確認
-    function askResume(g, m) {
-      const box = document.createElement('div');
-      box.id = 'resume';
-      box.innerHTML = '<p>前回の続きから遊びますか？</p><p class="note"></p>' +
-        '<button class="main" id="rYes">続きから</button> <button id="rNo">最初から</button>';
-      box.querySelector('.note').textContent = fmt(m.stateAt) + '・' + (m.device || '') + 'でやめたところから';
-      $('wrap').appendChild(box);
-      box.querySelector('#rNo').onclick = () => box.remove();
-      box.querySelector('#rYes').onclick = async () => {
-        box.querySelector('#rYes').textContent = '読み込み中…';
-        try {
-          window.EJS_emulator.gameManager.loadState(await getBlob(g.id, 'state', m.stateParts));
-        } catch (e) { alert('続きを読み込めませんでした'); }
-        box.remove();
-      };
-    }
-
-    // ゲーム内セーブ（SRAM）をアップロード（変わっていたときだけ）
-    async function syncSram() {
-      const gm = window.EJS_emulator && window.EJS_emulator.gameManager;
-      if (!cur || !gm || cur.busy) return;
-      const data = gm.getSaveFile();
-      if (!data || !data.length || sameBytes(data, cur.lastSram)) return;
-      cur.busy = true;
-      try {
-        note('セーブを保存中…');
-        const n = await putBlob(cur.g.id, 'sram', data);
-        const at = Date.now();
-        await setDoc(doc(db, 'saves', cur.g.id), { sramParts: n, sramAt: at, device: DEVICE }, { merge: true });
-        localStorage.setItem('sramAt_' + cur.g.id, at);
-        cur.lastSram = data.slice();
-        note('');
-      } catch (e) { console.warn(e); note('セーブの保存に失敗'); }
-      cur.busy = false;
-    }
-
-    // やめるときの「続きから」用の状態（ステート）をアップロード
-    async function syncState() {
-      const gm = window.EJS_emulator && window.EJS_emulator.gameManager;
-      if (!cur || !gm) return;
-      const state = gm.getState();
-      if (!state || !state.length) return;
-      note('続きを保存中…');
-      const n = await putBlob(cur.g.id, 'state', state);
-      await setDoc(doc(db, 'saves', cur.g.id), { stateParts: n, stateAt: Date.now(), device: DEVICE }, { merge: true });
-    }
-
-    // アプリを閉じたり別のアプリに切り替えたときも、ゲーム内セーブだけは保存を試す
-    document.addEventListener('visibilitychange', () => { if (document.hidden) syncSram(); });
-
     // ---------- ゲームをやめる（「✕」ボタン・ブラウザの「戻る」） ----------
     let playing = false;
-    let quitting = false;
-    async function quitGame() {
-      if (quitting) return;
-      quitting = true;
-      $('quit').disabled = true;
-      try {
-        if (cur) {
-          clearInterval(cur.timer);
-          while (cur.busy) await new Promise(r => setTimeout(r, 200));
-          await Promise.race([
-            (async () => { await syncSram(); await syncState(); })(),
-            new Promise(r => setTimeout(r, 20000))   // 20秒で諦める
-          ]);
-        } else {
-          window.EJS_emulator?.gameManager?.saveSaveFiles?.();
-        }
-      } catch (e) { console.warn(e); }
-      location.reload(); // 遊んでいた機種のゲーム一覧に戻る
+    function quitGame() {
+      try { window.EJS_emulator?.gameManager?.saveSaveFiles?.(); } catch (e) {} // ゲーム内セーブを保存
+      setTimeout(() => location.reload(), 300); // 再読み込みで、遊んでいた機種のゲーム一覧に戻る
     }
+    // 上のバーの☰で、EmulatorJSのメニューを開け閉めする
+    $('menuBtn').onclick = () => { try { window.EJS_emulator.menu.toggle(); } catch (e) {} };
+
     $('quit').onclick = () => { if (playing) history.back(); else quitGame(); };
     window.addEventListener('popstate', () => { if (playing) { playing = false; quitGame(); } });
 
@@ -601,7 +475,10 @@
         window.EJS_gameName = g.name;
         window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
         window.EJS_startOnLoaded = true;
-        window.EJS_onGameStart = () => onGameStarted(g);
+        // 起動したときに自動で開くメニューを閉じる
+        window.EJS_onGameStart = () => {
+          for (const t of [50, 300, 1000]) setTimeout(() => { try { window.EJS_emulator.menu.close(); } catch (e) {} }, t);
+        };
         const s = document.createElement('script');
         s.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
         document.body.appendChild(s);
