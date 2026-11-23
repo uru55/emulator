@@ -39,9 +39,12 @@
     summary { cursor: pointer; font-size: 16px; }
     .top { display: flex; justify-content: space-between; align-items: center; }
     #login, #denied, #menu { display: none; }
-    #wrap { width: 100%; height: 100vh; height: 100dvh; display: none; } /* dvh = スマホのアドレスバーを除いた高さ */
+    #wrap { width: 100%; height: 100vh; height: 100dvh; display: none; flex-direction: column; } /* dvh = スマホのアドレスバーを除いた高さ */
     #status { padding: 16px; }
-    #quit { position: fixed; top: 8px; left: 8px; z-index: 9999; padding: 6px 10px; font-size: 13px; background: rgba(0,0,0,.55); border-color: #555; }
+    #bar { height: 44px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 8px; background: #181818; border-bottom: 1px solid #333; }
+    #quit { padding: 6px 10px; font-size: 13px; }
+    #playing { font-size: 14px; color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #game { flex: 1; min-height: 0; }
   </style>
 </head>
 <body>
@@ -105,7 +108,11 @@
   </div>
 
   <!-- ゲーム画面 -->
-  <div id="wrap"><button id="quit">✕ やめる</button><div id="status"></div><div id="game"></div></div>
+  <div id="wrap">
+    <div id="bar"><button id="quit">✕ やめる</button><span id="playing"></span></div>
+    <div id="status"></div>
+    <div id="game"></div>
+  </div>
 
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
@@ -147,7 +154,7 @@
     let unsub = null;
 
     function show(id) {
-      for (const x of ['login', 'denied', 'menu', 'wrap']) $(x).style.display = x === id ? 'block' : 'none';
+      for (const x of ['login', 'denied', 'menu', 'wrap']) $(x).style.display = x === id ? (x === 'wrap' ? 'flex' : 'block') : 'none';
     }
 
     // ---------- ログイン ----------
@@ -419,6 +426,7 @@
       playing = true;
       history.pushState({ playing: true }, '', location.href);
       show('wrap');
+      $('playing').textContent = g.name;
       const status = $('status');
       try {
         status.textContent = '読み込み中…';
