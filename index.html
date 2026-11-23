@@ -9,9 +9,11 @@
     .box { max-width: 640px; margin: 0 auto; padding: 16px; }
     h1 { font-size: 20px; }
     h2 { font-size: 16px; margin-top: 24px; border-top: 1px solid #333; padding-top: 16px; }
-    #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; margin-top: 12px; }
+    #list { display: grid; align-items: start; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; margin-top: 12px; }
     .card { background: #1c1c1c; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
-    .cover { aspect-ratio: 3 / 4; background: #262626 center / contain no-repeat; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 40px; color: #555; }
+    .cover { display: block; width: 100%; cursor: pointer; background: #262626; }
+    img.cover { height: auto; }
+    .cover.noimg { aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #666; }
     .cover:hover { filter: brightness(1.15); }
     .title { padding: 8px; font-size: 14px; line-height: 1.4; flex: 1; }
     #consoles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-top: 12px; }
@@ -44,7 +46,7 @@
 <body>
   <!-- ログイン -->
   <div id="login" class="box">
-    <h1>🎮 レトロゲーム</h1>
+    <h1>レトロゲーム</h1>
     <p><button class="main" id="signin">Googleでログイン</button></p>
     <label class="note"><input type="checkbox" id="temp">このPCにログインを残さない（友達のPCではチェック）</label>
   </div>
@@ -60,7 +62,7 @@
   <!-- ゲーム一覧 -->
   <div id="menu" class="box">
     <div class="top">
-      <h1 id="heading">🎮 ゲーム機を選ぶ</h1>
+      <h1 id="heading">ゲーム機を選ぶ</h1>
       <button id="signout">ログアウト</button>
     </div>
     <div id="consoles"></div>
@@ -237,7 +239,7 @@
     }
 
     function renderConsoles() {
-      $('heading').textContent = '🎮 ゲーム機を選ぶ';
+      $('heading').textContent = 'ゲーム機を選ぶ';
       $('consoles').style.display = 'grid';
       $('gamesView').style.display = 'none';
       const box = $('consoles');
@@ -270,7 +272,7 @@
       const known = CONSOLES.map(x => x.core);
       const shown = currentCore === 'other' ? games.filter(g => !known.includes(g.core))
                                             : games.filter(g => g.core === currentCore);
-      $('heading').textContent = '🎮 ' + c.name;
+      $('heading').textContent = c.name;
       $('consoles').style.display = 'none';
       $('gamesView').style.display = 'block';
       if (currentCore !== 'other' && $('core').querySelector('option[value="' + currentCore + '"]')) $('core').value = currentCore;
@@ -282,10 +284,17 @@
         const card = document.createElement('div');
         card.className = 'card';
 
-        const cover = document.createElement('div');
-        cover.className = 'cover';
-        if (g.cover) cover.style.backgroundImage = 'url("' + g.cover + '")';
-        else cover.textContent = '🎮';
+        let cover;
+        if (g.cover) {
+          cover = document.createElement('img');   // 画像の縦横比のまま表示
+          cover.src = g.cover;
+          cover.alt = g.name;
+          cover.className = 'cover';
+        } else {
+          cover = document.createElement('div');
+          cover.className = 'cover noimg';
+          cover.textContent = '画像なし';
+        }
         cover.title = g.name + ' を遊ぶ';
         cover.onclick = () => start(g);
 
