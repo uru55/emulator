@@ -1,7 +1,7 @@
 // アプリとしてインストールするためのService Worker
 // ページ本体だけを保存しておき、ネットにつながらないときはそれを表示する。
 // ROMやFirebaseなど、ほかの通信には手を出さない。
-const CACHE = 'retro-v1';
+const CACHE = 'emu-v3';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./'])));
