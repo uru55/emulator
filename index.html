@@ -432,11 +432,121 @@
       }
     }).observe($('game'), { childList: true, subtree: true });
 
+    // ---------- ゲーム内セーブを端末に残す ----------
+    // EmulatorJSまかせだと保存が間に合わず消えることがあるので、
+    // このページ自身の保存場所（IndexedDB「emu-saves」）にゲームごとに保存しておく。
+    let curGame = null;
+    let lastSaved = null;
+    let saving = null;
+    function openSaveDb() {
+      return new Promise((resolve, reject) => {
+        const r = indexedDB.open('emu-saves', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('sram');
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+    }
+    async function dbGet(key) {
+      const db = await openSaveDb();
+      return new Promise((resolve, reject) => {
+        const q = db.transaction('sram').objectStore('sram').get(key);
+        q.onsuccess = () => resolve(q.result);
+        q.onerror = () => reject(q.error);
+      });
+    }
+    async function dbPut(key, value) {
+      const db = await openSaveDb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('sram', 'readwrite');
+        tx.objectStore('sram').put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    const sameBytes = (a, b) => a && b && a.length === b.length && a.every((v, i) => v === b[i]);
+    const gameManager = () => window.EJS_emulator && window.EJS_emulator.gameManager;
+
+    // ゲームが始まったら、保存しておいたセーブを読み込ませる
+    async function restoreSave(g) {
+      curGame = g;
+      const gm = gameManager();
+      if (!gm) return;
+      try {
+        const data = await dbGet(g.id);
+        if (!data || !data.length) return;
+        const path = gm.getSaveFilePath();
+        const dir = path.substring(0, path.lastIndexOf('/'));
+        if (dir) { try { gm.FS.mkdirTree ? gm.FS.mkdirTree(dir) : gm.FS.mkdir(dir); } catch (e) {} }
+        try { gm.FS.unlink(path); } catch (e) {}
+        gm.FS.writeFile(path, data);
+        gm.loadSaveFiles();
+        // ゲームにセーブを読み直させるためにリセット
+        if (gm.restart) gm.restart();
+        else if (gm.functions && gm.functions.restart) gm.functions.restart();
+        lastSaved = data;
+      } catch (e) { console.warn('セーブの読み込みに失敗', e); }
+    }
+
+    // 今のゲーム内セーブを保存（変わっていたときだけ）
+    function storeSave() {
+      if (saving) return saving;
+      saving = (async () => {
+        const gm = gameManager();
+        if (!curGame || !gm) return;
+        let data;
+        try { data = gm.getSaveFile(); } catch (e) { return; }
+        if (!data || !data.length || sameBytes(data, lastSaved)) return;
+        const copy = new Uint8Array(data);
+        await dbPut(curGame.id, copy);
+        lastSaved = copy;
+      })().catch(e => console.warn('セーブの保存に失敗', e)).finally(() => { saving = null; });
+      return saving;
+    }
+    // ---------- ボタン配置（キーボード・コントローラー）を機種ごとに残す ----------
+    // EmulatorJSはボタン配置をゲームごとに覚えるうえ、キーボードの変更は保存されないことがあるので、
+    // このページで機種ごとに localStorage「emu-controls-機種」に保存し、起動のたびに当て直す。
+    let lastControls = '';
+    function applyControls(core) {
+      const emu = window.EJS_emulator;
+      if (!emu) return;
+      try {
+        const saved = localStorage.getItem('emu-controls-' + core);
+        if (saved) {
+          emu.controls = JSON.parse(saved);
+          if (emu.checkGamepadInputs) emu.checkGamepadInputs();
+          if (emu.saveSettings) emu.saveSettings();
+        }
+        lastControls = JSON.stringify(emu.controls || {});
+      } catch (e) { console.warn('ボタン配置の読み込みに失敗', e); }
+    }
+    function storeControls() {
+      const emu = window.EJS_emulator;
+      if (!curGame || !emu || !emu.controls) return;
+      try {
+        const now = JSON.stringify(emu.controls);
+        if (now === lastControls) return;
+        localStorage.setItem('emu-controls-' + curGame.core, now);
+        lastControls = now;
+      } catch (e) {}
+    }
+    setInterval(storeControls, 3000);  // 3秒ごとに確認
+
+    setInterval(storeSave, 15000);   // 15秒ごとに確認
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { storeControls(); storeSave(); } });
+
     // ---------- ゲームをやめる（「✕」ボタン・ブラウザの「戻る」） ----------
     let playing = false;
-    function quitGame() {
-      try { window.EJS_emulator?.gameManager?.saveSaveFiles?.(); } catch (e) {} // ゲーム内セーブを保存
-      setTimeout(() => location.reload(), 300); // 再読み込みで、遊んでいた機種のゲーム一覧に戻る
+    let quitting = false;
+    async function quitGame() {
+      if (quitting) return;
+      quitting = true;
+      $('playing').textContent = '保存中…';
+      storeControls();
+      try {
+        await Promise.race([storeSave(), new Promise(r => setTimeout(r, 5000))]);
+        window.EJS_emulator?.gameManager?.saveSaveFiles?.();
+      } catch (e) {}
+      setTimeout(() => location.reload(), 500); // 遊んでいた機種のゲーム一覧に戻る
     }
     // 上のバーの☰で、EmulatorJSのメニューを開け閉めする
     $('menuBtn').onclick = () => { try { window.EJS_emulator.menu.toggle(); } catch (e) {} };
@@ -477,6 +587,9 @@
         window.EJS_startOnLoaded = true;
         // 起動したときに自動で開くメニューを閉じる
         window.EJS_onGameStart = () => {
+          curGame = g;
+          applyControls(g.core);
+          restoreSave(g);
           for (const t of [50, 300, 1000]) setTimeout(() => { try { window.EJS_emulator.menu.close(); } catch (e) {} }, t);
         };
         const s = document.createElement('script');
