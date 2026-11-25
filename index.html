@@ -53,6 +53,8 @@
     #quit { width: 36px; height: 32px; padding: 0; font-size: 16px; line-height: 1; }
     #menuBtn { width: 36px; height: 32px; padding: 0; font-size: 18px; line-height: 1; margin-left: auto; flex: none; }
     .ejs_virtualGamepad_open { display: none !important; } /* EmulatorJSの☰は隠して、上のバーの☰を使う */
+    /* EmulatorJSのメニューバーは、上のバーの☰を押したときだけ出す（画面を触っただけでは出さない） */
+    #game:not(.menu-open) .ejs_menu_bar { display: none !important; }
     /* DS：仮想パッドの透明な部分がタッチを横取りしないようにする（ボタン自体は押せる） */
     #game.nds .ejs_virtualGamepad_parent { pointer-events: none; }
     #game.nds .ejs_virtualGamepad_parent .ejs_virtualGamepad_button,
@@ -585,7 +587,19 @@
       setTimeout(() => location.reload(), 500); // 遊んでいた機種のゲーム一覧に戻る
     }
     // 上のバーの☰で、EmulatorJSのメニューを開け閉めする
-    $('menuBtn').onclick = () => { try { window.EJS_emulator.menu.toggle(); } catch (e) {} };
+    $('menuBtn').onclick = () => {
+      const bar = $('game').querySelector('.ejs_menu_bar');
+      const opening = !$('game').classList.contains('menu-open') || (bar && bar.classList.contains('ejs_menu_bar_hidden'));
+      $('game').classList.toggle('menu-open', opening);
+      try { opening ? window.EJS_emulator.menu.open() : window.EJS_emulator.menu.close(); } catch (e) {}
+      // EmulatorJSが自動でメニューを隠したら、また出てこないようにする
+      if (bar && !bar.dataset.watch) {
+        bar.dataset.watch = '1';
+        new MutationObserver(() => {
+          if (bar.classList.contains('ejs_menu_bar_hidden')) $('game').classList.remove('menu-open');
+        }).observe(bar, { attributes: true, attributeFilter: ['class'] });
+      }
+    };
 
     $('quit').onclick = () => { if (playing) history.back(); else quitGame(); };
     window.addEventListener('popstate', () => { if (playing) { playing = false; quitGame(); } });
