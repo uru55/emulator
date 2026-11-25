@@ -53,6 +53,11 @@
     #quit { width: 36px; height: 32px; padding: 0; font-size: 16px; line-height: 1; }
     #menuBtn { width: 36px; height: 32px; padding: 0; font-size: 18px; line-height: 1; margin-left: auto; flex: none; }
     .ejs_virtualGamepad_open { display: none !important; } /* EmulatorJSの☰は隠して、上のバーの☰を使う */
+    /* DS：仮想パッドの透明な部分がタッチを横取りしないようにする（ボタン自体は押せる） */
+    #game.nds .ejs_virtualGamepad_parent { pointer-events: none; }
+    #game.nds .ejs_virtualGamepad_parent .ejs_virtualGamepad_button,
+    #game.nds .ejs_virtualGamepad_parent .ejs_dpad_main,
+    #game.nds .ejs_virtualGamepad_parent [class*=" b_"] { pointer-events: auto; }
     #playing { flex: 1; min-width: 0; font-size: 14px; color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #game { flex: 1; min-height: 0; }
   </style>
@@ -534,6 +539,37 @@
     setInterval(storeSave, 15000);   // 15秒ごとに確認
     document.addEventListener('visibilitychange', () => { if (document.hidden) { storeControls(); storeSave(); } });
 
+    // ---------- DSのタッチ操作 ----------
+    // スマホの指のタッチを、ゲーム画面（canvas）へのマウス操作に変換して渡す。
+    // エミュレータ側は「Touch（ポインター）」モードにして、押した場所をそのままタッチ位置として使う。
+    function enableDsTouch() {
+      const canvas = $('game').querySelector('canvas');
+      if (!canvas || canvas.dataset.touch) return;
+      canvas.dataset.touch = '1';
+      canvas.style.touchAction = 'none';
+      const send = (type, t) => canvas.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, cancelable: true, view: window,
+        clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY,
+        button: 0, buttons: type === 'mouseup' ? 0 : 1
+      }));
+      let id = null;
+      canvas.addEventListener('touchstart', e => {
+        const t = e.changedTouches[0];
+        if (id !== null) return;
+        id = t.identifier;
+        e.preventDefault();
+        send('mousemove', t); send('mousedown', t);
+      }, { passive: false });
+      canvas.addEventListener('touchmove', e => {
+        for (const t of e.changedTouches) if (t.identifier === id) { e.preventDefault(); send('mousemove', t); }
+      }, { passive: false });
+      const end = e => {
+        for (const t of e.changedTouches) if (t.identifier === id) { e.preventDefault(); send('mouseup', t); id = null; }
+      };
+      canvas.addEventListener('touchend', end, { passive: false });
+      canvas.addEventListener('touchcancel', end, { passive: false });
+    }
+
     // ---------- ゲームをやめる（「✕」ボタン・ブラウザの「戻る」） ----------
     let playing = false;
     let quitting = false;
@@ -585,11 +621,17 @@
         window.EJS_gameName = g.name;
         window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
         window.EJS_startOnLoaded = true;
+        if (g.core === 'nds') {
+          $('game').classList.add('nds');
+          // タッチ画面をポインター（押した場所＝タッチ位置）で操作する設定
+          window.EJS_defaultOptions = { melonds_touch_mode: 'Touch', desmume_pointer_type: 'touch' };
+        }
         // 起動したときに自動で開くメニューを閉じる
         window.EJS_onGameStart = () => {
           curGame = g;
           applyControls(g.core);
           restoreSave(g);
+          if (g.core === 'nds') for (const t of [100, 1000, 3000]) setTimeout(enableDsTouch, t);
           for (const t of [50, 300, 1000]) setTimeout(() => { try { window.EJS_emulator.menu.close(); } catch (e) {} }, t);
         };
         const s = document.createElement('script');
